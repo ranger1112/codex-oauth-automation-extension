@@ -18,6 +18,7 @@
       setState,
       broadcastDataUpdate = null,
       sleepWithStop,
+      throwIfAutoRunSessionStopped = null,
       throwIfStopped,
       DEFAULT_HERO_SMS_BASE_URL = 'https://hero-sms.com/stubs/handler_api.php',
       DEFAULT_FIVE_SIM_BASE_URL = 'https://5sim.net/v1',
@@ -1505,6 +1506,20 @@
       return message === '流程已被用户停止。'
         || /已被用户停止/.test(message)
         || /flow\s+was\s+stopped|stopped\s+by\s+user/i.test(message);
+    }
+
+    function getAutoRunSessionIdFromState(state = {}) {
+      const sessionId = Math.floor(Number(state?.autoRunSessionId) || 0);
+      return sessionId > 0 ? sessionId : 0;
+    }
+
+    function throwIfPhoneVerificationRunStale(state = {}) {
+      const sessionId = getAutoRunSessionIdFromState(state);
+      if (sessionId && typeof throwIfAutoRunSessionStopped === 'function') {
+        throwIfAutoRunSessionStopped(sessionId);
+        return;
+      }
+      throwIfStopped();
     }
 
     function isAuthContentScriptUnreachableError(error) {
@@ -3888,7 +3903,7 @@
           if (maxRounds > 0 && pollCount >= maxRounds) {
             break;
           }
-          throwIfStopped();
+          throwIfPhoneVerificationRunStale(state);
           const payload = await fetchFiveSimPayload(
             config,
             `/user/check/${normalizedActivation.activationId}`,
@@ -3910,6 +3925,7 @@
           const statusText = String(payload?.status || '').trim().toUpperCase();
           if (/^(RECEIVED|PENDING|RETRY|PREPARE|WAITING)$/i.test(statusText) || !statusText) {
             const waitingStatusText = statusText || text || 'PENDING';
+            throwIfPhoneVerificationRunStale(state);
             if (typeof options.onStatus === 'function') {
               await options.onStatus({
                 activation: normalizedActivation,
@@ -3919,6 +3935,7 @@
                 timeoutMs,
               });
             }
+            throwIfPhoneVerificationRunStale(state);
             await emitWaitingForCode(waitingStatusText);
             await sleepWithStop(intervalMs);
             continue;
@@ -3939,7 +3956,7 @@
           if (maxRounds > 0 && pollCount >= maxRounds) {
             break;
           }
-          throwIfStopped();
+          throwIfPhoneVerificationRunStale(state);
           const payload = await fetchNexSmsPayload(
             config,
             '/api/sms/messages',
@@ -3955,6 +3972,7 @@
           lastResponse = text;
           pollCount += 1;
 
+          throwIfPhoneVerificationRunStale(state);
           if (typeof options.onStatus === 'function') {
             await options.onStatus({
               activation: normalizedActivation,
@@ -3964,6 +3982,7 @@
               timeoutMs,
             });
           }
+          throwIfPhoneVerificationRunStale(state);
 
           if (isNexSmsSuccessPayload(payload)) {
             const directCode = extractVerificationCode(payload?.data?.code || payload?.data?.text || '');
@@ -3994,7 +4013,7 @@
         if (maxRounds > 0 && pollCount >= maxRounds) {
           break;
         }
-        throwIfStopped();
+        throwIfPhoneVerificationRunStale(state);
         const payload = await fetchHeroSmsPayload(config, {
           action: statusAction,
           id: normalizedActivation.activationId,
@@ -4003,6 +4022,7 @@
         lastResponse = text;
         pollCount += 1;
 
+        throwIfPhoneVerificationRunStale(state);
         if (typeof options.onStatus === 'function') {
           await options.onStatus({
             activation: normalizedActivation,
@@ -4012,6 +4032,7 @@
             timeoutMs,
           });
         }
+        throwIfPhoneVerificationRunStale(state);
 
         const v2Code = (
           payload

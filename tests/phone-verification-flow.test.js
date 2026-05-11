@@ -83,6 +83,61 @@ test('phone verification helper requests HeroSMS numbers with fixed OpenAI and T
   assert.equal(requests[1].searchParams.get('api_key'), 'demo-key');
 });
 
+test('phone verification polling stops when auto-run session becomes stale', async () => {
+  let fetchCalled = false;
+  let statusCalled = false;
+  const helpers = api.createPhoneVerificationHelpers({
+    addLog: async () => {},
+    ensureStep8SignupPageReady: async () => {},
+    fetchImpl: async () => {
+      fetchCalled = true;
+      return {
+        ok: true,
+        text: async () => 'STATUS_WAIT_CODE',
+      };
+    },
+    getState: async () => ({ heroSmsApiKey: 'demo-key' }),
+    sendToContentScriptResilient: async () => ({}),
+    setState: async () => {},
+    sleepWithStop: async () => {},
+    throwIfAutoRunSessionStopped: (sessionId) => {
+      if (sessionId === 123) {
+        throw new Error('流程已被用户停止。');
+      }
+    },
+    throwIfStopped: () => {},
+  });
+
+  await assert.rejects(
+    helpers.pollPhoneActivationCode(
+      {
+        heroSmsApiKey: 'demo-key',
+        autoRunSessionId: 123,
+      },
+      {
+        activationId: 'activation-123',
+        phoneNumber: '66959916439',
+        provider: 'hero-sms',
+        serviceCode: 'dr',
+        countryId: 52,
+        successfulUses: 0,
+        maxUses: 3,
+      },
+      {
+        timeoutMs: 1000,
+        intervalMs: 1000,
+        maxRounds: 1,
+        onStatus: async () => {
+          statusCalled = true;
+        },
+      }
+    ),
+    /流程已被用户停止/
+  );
+  assert.equal(fetchCalled, false);
+  assert.equal(statusCalled, false);
+});
+
 test('signup phone helper persists signup runtime state without touching add-phone activation', async () => {
   const setStateCalls = [];
   let currentState = {

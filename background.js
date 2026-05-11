@@ -11172,6 +11172,7 @@ const phoneVerificationHelpers = self.MultiPageBackgroundPhoneVerification?.crea
   sendToContentScriptResilient,
   setState,
   sleepWithStop,
+  throwIfAutoRunSessionStopped,
   throwIfStopped,
   createFiveSimProvider: self.PhoneSmsFiveSimProvider?.createProvider,
 });
