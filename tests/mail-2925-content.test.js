@@ -8,9 +8,10 @@ test('ensureMail2925Session waits at most 40 seconds for mailbox after clicking 
   assert.match(source, /waitForMail2925View\('mailbox',\s*40000\)/);
 });
 
-test('handlePollEmail waits 25 seconds after refreshing an empty 2925 mailbox', () => {
+test('handlePollEmail waits up to 25 seconds after refreshing an empty 2925 mailbox', () => {
   assert.match(source, /MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS\s*=\s*25000/);
-  assert.match(source, /await sleep\(MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS\);/);
+  assert.match(source, /initialItems\s*=\s*await waitForMailItemsAfterRefresh\(\);/);
+  assert.match(source, /async function waitForMailItemsAfterRefresh\(timeoutMs\s*=\s*MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS\)/);
 });
 
 test('ensureMail2925Session waits 1 second after filling credentials before clicking login', () => {
@@ -129,6 +130,9 @@ function extractFunction(name) {
 
 test('handlePollEmail establishes a baseline after opening from detail view and only picks mail from a later refresh', async () => {
   const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('waitForMailItemsAfterRefresh'),
     extractFunction('normalizeMinuteTimestamp'),
     extractFunction('handlePollEmail'),
   ].join('\n');
@@ -237,8 +241,131 @@ return {
   assert.deepEqual(api.getReadAndDeleteCalls(), ['baseline', 'new']);
 });
 
+test('handlePollEmail continues as soon as mail appears after empty inbox refresh', async () => {
+  const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('waitForMailItemsAfterRefresh'),
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('handlePollEmail'),
+  ].join('\n');
+
+  const api = new Function(`
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
+let state = 'empty';
+let sleepCalls = 0;
+const seenCodes = new Set();
+const readAndDeleteCalls = [];
+const newMail = {
+  id: 'new',
+  text: 'OpenAI verification code 862590',
+  timestamp: 300000,
+};
+
+function findMailItems() {
+  return state === 'ready' ? [newMail] : [];
+}
+
+function parseMailItemTimestamp(item) {
+  return item.timestamp;
+}
+
+function matchesMailFilters(text) {
+  return /openai|verification/i.test(String(text || ''));
+}
+
+function getMailItemText(item) {
+  return item.text;
+}
+
+function extractVerificationCode(text) {
+  const match = String(text || '').match(/(\\d{6})/);
+  return match ? match[1] : null;
+}
+
+async function sleep() {
+  sleepCalls += 1;
+  state = 'ready';
+}
+async function sleepRandom() {}
+async function returnToInbox() {
+  return true;
+}
+async function refreshInbox() {}
+async function openMailAndDeleteAfterRead(item) {
+  readAndDeleteCalls.push(item.id);
+  return item.text;
+}
+async function ensureSeenCodesSession() {}
+function persistSeenCodes() {}
+function log() {}
+
+${bundle}
+
+return {
+  handlePollEmail,
+  getSleepCalls() {
+    return sleepCalls;
+  },
+  getReadAndDeleteCalls() {
+    return readAndDeleteCalls.slice();
+  },
+};
+`)();
+
+  const result = await api.handlePollEmail(8, {
+    senderFilters: ['openai'],
+    subjectFilters: ['verification'],
+    maxAttempts: 1,
+    intervalMs: 1,
+  });
+
+  assert.equal(result.code, '862590');
+  assert.equal(api.getSleepCalls(), 1);
+  assert.deepEqual(api.getReadAndDeleteCalls(), ['new']);
+});
+
+test('waitForMailItemsAfterRefresh returns as soon as refreshed mail appears', async () => {
+  const bundle = [
+    extractFunction('waitForMailItemsAfterRefresh'),
+  ].join('\n');
+
+  const api = new Function(`
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
+let attempts = 0;
+let ready = false;
+
+function findMailItems() {
+  return ready ? [{ id: 'mail-1' }] : [];
+}
+
+function throwIfMail2925LimitReached() {}
+
+async function sleep() {
+  attempts += 1;
+  ready = true;
+}
+
+${bundle}
+
+return {
+  waitForMailItemsAfterRefresh,
+  getAttempts() {
+    return attempts;
+  },
+};
+`)();
+
+  const items = await api.waitForMailItemsAfterRefresh();
+  assert.equal(items.length, 1);
+  assert.equal(api.getAttempts(), 1);
+});
+
 test('handlePollEmail keeps ignoring targetEmail when receive-mode matching is disabled', async () => {
   const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('waitForMailItemsAfterRefresh'),
     extractFunction('normalizeMinuteTimestamp'),
     extractFunction('handlePollEmail'),
   ].join('\n');
@@ -325,6 +452,9 @@ return {
 
 test('handlePollEmail skips explicit mismatched target emails when receive-mode matching is enabled', async () => {
   const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('waitForMailItemsAfterRefresh'),
     extractFunction('extractEmails'),
     extractFunction('extractForwardedTargetEmails'),
     extractFunction('emailMatchesTarget'),
@@ -417,6 +547,9 @@ return {
 
 test('handlePollEmail only accepts 2925 mails inside the fixed lookback window', async () => {
   const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('waitForMailItemsAfterRefresh'),
     extractFunction('normalizeMinuteTimestamp'),
     extractFunction('handlePollEmail'),
   ].join('\n');
@@ -829,6 +962,9 @@ return { getOpenedMailDetailText, extractVerificationCode, mailItem };
 
 test('handlePollEmail skips excluded preview code before opening stale 2925 mail', async () => {
   const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('waitForMailItemsAfterRefresh'),
     extractFunction('normalizeMinuteTimestamp'),
     extractFunction('handlePollEmail'),
   ].join('\n');
@@ -907,6 +1043,93 @@ return {
 
   assert.equal(result.code, '222222');
   assert.deepEqual(api.getReadAndDeleteCalls(), ['new']);
+});
+
+test('handlePollEmail logs why 2925 mails are skipped before opening', async () => {
+  const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('waitForMailItemsAfterRefresh'),
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('handlePollEmail'),
+  ].join('\n');
+
+  const api = new Function(`
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
+const logs = [];
+const staleMail = {
+  id: 'stale',
+  text: 'OpenAI verification code 111111',
+  timestamp: 120000,
+};
+const wrongSubjectMail = {
+  id: 'wrong-subject',
+  text: 'Newsletter without code',
+  timestamp: 240000,
+};
+
+function findMailItems() {
+  return [staleMail, wrongSubjectMail];
+}
+
+function parseMailItemTimestamp(item) {
+  return item.timestamp;
+}
+
+function matchesMailFilters(text) {
+  return /openai|verification/i.test(String(text || ''));
+}
+
+function getMailItemText(item) {
+  return item.text;
+}
+
+function extractVerificationCode(text) {
+  const match = String(text || '').match(/(\\d{6})/);
+  return match ? match[1] : null;
+}
+
+async function sleep() {}
+async function sleepRandom() {}
+async function returnToInbox() {
+  return true;
+}
+async function refreshInbox() {}
+async function openMailAndDeleteAfterRead() {
+  throw new Error('should not open skipped mail');
+}
+async function ensureSeenCodesSession() {}
+function persistSeenCodes() {}
+function log(message, level = 'info') {
+  logs.push({ message, level });
+}
+
+const seenCodes = new Set();
+
+${bundle}
+
+return {
+  handlePollEmail,
+  getLogs() {
+    return logs.slice();
+  },
+};
+`)();
+
+  await assert.rejects(
+    api.handlePollEmail(8, {
+      senderFilters: ['openai'],
+      subjectFilters: ['verification'],
+      maxAttempts: 1,
+      intervalMs: 1,
+      filterAfterTimestamp: 180000,
+    }),
+    /仍未在 2925 邮箱中找到新的匹配邮件/
+  );
+
+  const messages = api.getLogs().map((entry) => entry.message).join('\n');
+  assert.match(messages, /跳过 2925 邮件（第 1\/2 封[\s\S]*邮件时间早于本轮筛选时间/);
+  assert.match(messages, /跳过 2925 邮件（第 2\/2 封[\s\S]*预览不匹配发件人\/主题筛选条件/);
 });
 
 test('deleteAllMailboxEmails selects all messages and clicks delete', async () => {

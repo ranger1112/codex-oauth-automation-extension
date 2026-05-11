@@ -221,6 +221,17 @@ function normalizeNodeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function summarizeMail2925Text(value, limit = 80) {
+  const normalized = normalizeNodeText(value);
+  if (!normalized) {
+    return '';
+  }
+  const maxLength = Math.max(20, Math.floor(Number(limit) || 80));
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength)}...`
+    : normalized;
+}
+
 function buildMail2925LimitError(message = '') {
   const normalized = normalizeNodeText(message || '子邮箱已达上限邮箱') || '子邮箱已达上限邮箱';
   return new Error(`${MAIL2925_LIMIT_ERROR_PREFIX}${normalized}`);
@@ -1105,6 +1116,21 @@ async function refreshInbox() {
   }
 }
 
+async function waitForMailItemsAfterRefresh(timeoutMs = MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS) {
+  const deadline = Date.now() + Math.max(500, Math.floor(Number(timeoutMs) || 0));
+  while (Date.now() <= deadline) {
+    if (typeof throwIfMail2925LimitReached === 'function') {
+      throwIfMail2925LimitReached();
+    }
+    const items = findMailItems();
+    if (items.length > 0) {
+      return items;
+    }
+    await sleep(500);
+  }
+  return findMailItems();
+}
+
 async function waitForMail2925View(targetView, timeoutMs = 45000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt <= timeoutMs) {
@@ -1275,11 +1301,7 @@ async function handlePollEmail(step, payload) {
     initialLoadUsedRefresh = true;
     await returnToInbox();
     await refreshInbox();
-    await sleep(MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS);
-    if (typeof throwIfMail2925LimitReached === 'function') {
-      throwIfMail2925LimitReached();
-    }
-    initialItems = findMailItems();
+    initialItems = await waitForMailItemsAfterRefresh();
   }
 
   if (initialItems.length === 0) {
@@ -1306,29 +1328,42 @@ async function handlePollEmail(step, payload) {
         const item = items[index];
         const itemTimestamp = parseMailItemTimestamp(item);
         const itemMinute = normalizeMinuteTimestamp(itemTimestamp || 0);
+        const itemLabel = `第 ${index + 1}/${items.length} 封`;
+        const itemTimeLabel = itemTimestamp
+          ? new Date(itemTimestamp).toLocaleString('zh-CN', { hour12: false })
+          : '未知时间';
+        const logSkipMail = (reason, text = '') => {
+          const summary = summarizeMail2925Text(text || getMailItemText(item));
+          const suffix = summary ? `，预览：${summary}` : '';
+          log(`步骤 ${step}：跳过 2925 邮件（${itemLabel}，时间：${itemTimeLabel}）：${reason}${suffix}`, 'info');
+        };
 
         if (filterAfterMinute && (!itemMinute || itemMinute < filterAfterMinute)) {
+          const thresholdLabel = new Date(filterAfterMinute).toLocaleString('zh-CN', { hour12: false });
+          logSkipMail(`邮件时间早于本轮筛选时间 ${thresholdLabel}`);
           continue;
         }
 
         const previewText = getMailItemText(item);
         if (!matchesMailFilters(previewText, senderFilters, subjectFilters)) {
+          logSkipMail('预览不匹配发件人/主题筛选条件', previewText);
           continue;
         }
         const previewTargetState = mail2925MatchTargetEmail
           ? getTargetEmailMatchState(previewText, targetEmail)
           : { matches: true, hasExplicitEmail: false };
         if (mail2925MatchTargetEmail && previewTargetState.hasExplicitEmail && !previewTargetState.matches) {
+          logSkipMail(`预览中的目标邮箱不匹配 ${targetEmail || '(empty)'}`, previewText);
           continue;
         }
 
         const previewCode = extractVerificationCode(previewText, strictChatGPTCodeOnly);
         if (previewCode && excludedCodeSet.has(previewCode)) {
-          log(`步骤 ${step}：跳过预览中已排除的验证码：${previewCode}`, 'info');
+          logSkipMail(`预览验证码 ${previewCode} 已在排除列表`, previewText);
           continue;
         }
         if (previewCode && seenCodes.has(previewCode)) {
-          log(`步骤 ${step}：跳过预览中已处理过的验证码：${previewCode}`, 'info');
+          logSkipMail(`预览验证码 ${previewCode} 已处理过`, previewText);
           continue;
         }
         const openedText = await openMailAndDeleteAfterRead(item, step);
@@ -1336,21 +1371,23 @@ async function handlePollEmail(step, payload) {
           ? getTargetEmailMatchState(openedText, targetEmail)
           : { matches: true, hasExplicitEmail: false };
         if (mail2925MatchTargetEmail && openedTargetState.hasExplicitEmail && !openedTargetState.matches) {
+          logSkipMail(`正文中的目标邮箱不匹配 ${targetEmail || '(empty)'}`, openedText);
           continue;
         }
         const bodyCode = extractVerificationCode(openedText, strictChatGPTCodeOnly);
         const candidateCode = bodyCode || previewCode;
 
         if (!candidateCode) {
+          logSkipMail('打开后未提取到验证码', openedText || previewText);
           continue;
         }
 
         if (excludedCodeSet.has(candidateCode)) {
-          log(`步骤 ${step}：跳过排除的验证码：${candidateCode}`, 'info');
+          logSkipMail(`验证码 ${candidateCode} 已在排除列表`, openedText || previewText);
           continue;
         }
         if (seenCodes.has(candidateCode)) {
-          log(`步骤 ${step}：跳过已处理过的验证码：${candidateCode}`, 'info');
+          logSkipMail(`验证码 ${candidateCode} 已处理过`, openedText || previewText);
           continue;
         }
 
