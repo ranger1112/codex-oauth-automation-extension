@@ -8,8 +8,8 @@ test('ensureMail2925Session waits at most 40 seconds for mailbox after clicking 
   assert.match(source, /waitForMail2925View\('mailbox',\s*40000\)/);
 });
 
-test('handlePollEmail waits 1 minute after refreshing an empty 2925 mailbox', () => {
-  assert.match(source, /MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS\s*=\s*60000/);
+test('handlePollEmail waits 25 seconds after refreshing an empty 2925 mailbox', () => {
+  assert.match(source, /MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS\s*=\s*25000/);
   assert.match(source, /await sleep\(MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS\);/);
 });
 
@@ -134,7 +134,7 @@ test('handlePollEmail establishes a baseline after opening from detail view and 
   ].join('\n');
 
   const api = new Function(`
-const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 60000;
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
 let state = 'detail';
 let refreshCalls = 0;
 const clickOrder = [];
@@ -244,7 +244,7 @@ test('handlePollEmail keeps ignoring targetEmail when receive-mode matching is d
   ].join('\n');
 
   const api = new Function(`
-const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 60000;
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
 let state = 'empty';
 const seenCodes = new Set();
 const readAndDeleteCalls = [];
@@ -334,7 +334,7 @@ test('handlePollEmail skips explicit mismatched target emails when receive-mode 
   ].join('\n');
 
   const api = new Function(`
-const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 60000;
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
 let state = 'ready';
 const seenCodes = new Set();
 const readAndDeleteCalls = [];
@@ -422,7 +422,7 @@ test('handlePollEmail only accepts 2925 mails inside the fixed lookback window',
   ].join('\n');
 
   const api = new Function(`
-const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 60000;
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
 let state = 'ready';
 const seenCodes = new Set();
 const readAndDeleteCalls = [];
@@ -834,7 +834,7 @@ test('handlePollEmail skips excluded preview code before opening stale 2925 mail
   ].join('\n');
 
   const api = new Function(`
-const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 60000;
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
 let state = 'ready';
 const seenCodes = new Set();
 const readAndDeleteCalls = [];

@@ -13,7 +13,7 @@ if (!isTopFrame) {
 let seenCodes = new Set();
 let seenCodeSessionKey = '';
 let seenCodesReadyPromise = null;
-const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 60000;
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 25000;
 
 async function loadSeenCodes() {
   try {
