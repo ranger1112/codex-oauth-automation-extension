@@ -151,6 +151,22 @@ const MAIL_DELETE_SELECTORS = [
   '[aria-label*="删除"]',
   '[class*="Delete"]',
 ];
+const MAIL_DETAIL_TEXT_SELECTORS = [
+  '.mail-detail',
+  '.mailDetail',
+  '[class*="mail-detail"]',
+  '[class*="MailDetail"]',
+  '[class*="detail"]',
+  '[class*="Detail"]',
+  '[class*="mail-body"]',
+  '[class*="mailBody"]',
+  '[class*="message-body"]',
+  '[class*="MessageBody"]',
+  '[class*="body"]',
+  '[class*="Body"]',
+  'article',
+  'main',
+];
 const MAIL_SELECT_ALL_SELECTORS = [
   'input[type="checkbox"]',
   '[role="checkbox"]',
@@ -613,9 +629,9 @@ function isCheckboxChecked(node) {
 
 function getMailItemText(item) {
   if (!item) return '';
-  const contentCell = item.querySelector('td.content, .content, .mail-content');
-  const titleEl = item.querySelector('.mail-content-title');
-  const textEl = item.querySelector('.mail-content-text');
+  const contentCell = item.querySelector?.('td.content, .content, .mail-content');
+  const titleEl = item.querySelector?.('.mail-content-title');
+  const textEl = item.querySelector?.('.mail-content-text');
   return [
     titleEl?.getAttribute('title') || '',
     titleEl?.textContent || '',
@@ -623,6 +639,54 @@ function getMailItemText(item) {
     contentCell?.textContent || '',
     item.textContent || '',
   ].join(' ');
+}
+
+function getVisibleNodeText(node) {
+  if (!node || !isVisibleNode(node)) return '';
+  return normalizeNodeText(node.innerText || node.textContent || '');
+}
+
+function getOpenedMailDetailText(item, beforeOpenText = '') {
+  const beforeText = normalizeNodeText(beforeOpenText);
+  const previewText = normalizeNodeText(getMailItemText(item));
+  const candidates = [];
+
+  for (const selector of MAIL_DETAIL_TEXT_SELECTORS) {
+    const nodes = document.querySelectorAll(selector);
+    for (const node of nodes) {
+      if (!node || node === item || isMailItemNode(node)) {
+        continue;
+      }
+      const text = getVisibleNodeText(node);
+      if (!text) {
+        continue;
+      }
+      const hasVerificationSignal = /openai|chatgpt|verification|verify|code|验证码|代码|\b\d{6}\b/i.test(text);
+      if (!hasVerificationSignal) {
+        continue;
+      }
+      candidates.push(text);
+    }
+  }
+
+  candidates.sort((left, right) => right.length - left.length);
+  const detailText = candidates.find((text) => {
+    if (!beforeText) return true;
+    if (text === previewText) return false;
+    return !beforeText.includes(text) || text.length > previewText.length + 20;
+  });
+  if (detailText) {
+    return detailText;
+  }
+
+  const bodyText = normalizeNodeText(document.body?.innerText || document.body?.textContent || '');
+  if (beforeText && bodyText.includes(beforeText)) {
+    const deltaText = normalizeNodeText(bodyText.replace(beforeText, ' '));
+    if (deltaText) {
+      return deltaText;
+    }
+  }
+  return bodyText;
 }
 
 function getMailItemTimeText(item) {
@@ -945,10 +1009,11 @@ async function returnToInbox() {
 }
 
 async function openMailAndGetMessageText(item) {
+  const beforeOpenText = normalizeNodeText(document.body?.innerText || document.body?.textContent || '');
   simulateClick(item);
   try {
     await sleepRandom(1200, 2200);
-    return document.body?.textContent || '';
+    return getOpenedMailDetailText(item, beforeOpenText);
   } finally {
     await returnToInbox();
   }
@@ -971,10 +1036,11 @@ async function deleteCurrentMailboxEmail(step) {
 }
 
 async function openMailAndDeleteAfterRead(item, step) {
+  const beforeOpenText = normalizeNodeText(document.body?.innerText || document.body?.textContent || '');
   simulateClick(item);
   try {
     await sleepRandom(1200, 2200);
-    return document.body?.textContent || '';
+    return getOpenedMailDetailText(item, beforeOpenText);
   } finally {
     await deleteCurrentMailboxEmail(step);
     await returnToInbox();
@@ -1256,6 +1322,14 @@ async function handlePollEmail(step, payload) {
         }
 
         const previewCode = extractVerificationCode(previewText, strictChatGPTCodeOnly);
+        if (previewCode && excludedCodeSet.has(previewCode)) {
+          log(`步骤 ${step}：跳过预览中已排除的验证码：${previewCode}`, 'info');
+          continue;
+        }
+        if (previewCode && seenCodes.has(previewCode)) {
+          log(`步骤 ${step}：跳过预览中已处理过的验证码：${previewCode}`, 'info');
+          continue;
+        }
         const openedText = await openMailAndDeleteAfterRead(item, step);
         const openedTargetState = mail2925MatchTargetEmail
           ? getTargetEmailMatchState(openedText, targetEmail)

@@ -594,6 +594,12 @@ return { extractVerificationCode };
 
 test('openMailAndGetMessageText always returns to inbox after opening a 2925 message', async () => {
   const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('isVisibleNode'),
+    extractFunction('isMailItemNode'),
+    extractFunction('getMailItemText'),
+    extractFunction('getVisibleNodeText'),
+    extractFunction('getOpenedMailDetailText'),
     extractFunction('returnToInbox'),
     extractFunction('openMailAndGetMessageText'),
   ].join('\n');
@@ -606,11 +612,24 @@ let bodyText = '';
 
 const document = {
   body: {
+    innerText: '',
     get textContent() {
       return bodyText;
     },
   },
+  querySelectorAll(selector) {
+    if (selector === '.mail-item') return listVisible ? [mailItem] : [];
+    return [];
+  },
 };
+const window = {
+  getComputedStyle() {
+    return { display: 'block', visibility: 'visible' };
+  },
+};
+const MAIL_ITEM_SELECTORS = ['.mail-item'];
+const MAIL_ITEM_SELECTOR_GROUP = '.mail-item';
+const MAIL_DETAIL_TEXT_SELECTORS = [];
 
 function findMailItems() {
   return listVisible ? [mailItem] : [];
@@ -657,6 +676,12 @@ return {
 
 test('openMailAndDeleteAfterRead deletes the opened message before returning to inbox', async () => {
   const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('isVisibleNode'),
+    extractFunction('isMailItemNode'),
+    extractFunction('getMailItemText'),
+    extractFunction('getVisibleNodeText'),
+    extractFunction('getOpenedMailDetailText'),
     extractFunction('deleteCurrentMailboxEmail'),
     extractFunction('returnToInbox'),
     extractFunction('openMailAndDeleteAfterRead'),
@@ -671,11 +696,24 @@ let bodyText = '';
 
 const document = {
   body: {
+    innerText: '',
     get textContent() {
       return bodyText;
     },
   },
+  querySelectorAll(selector) {
+    if (selector === '.mail-item') return listVisible ? [mailItem] : [];
+    return [];
+  },
 };
+const window = {
+  getComputedStyle() {
+    return { display: 'block', visibility: 'visible' };
+  },
+};
+const MAIL_ITEM_SELECTORS = ['.mail-item'];
+const MAIL_ITEM_SELECTOR_GROUP = '.mail-item';
+const MAIL_DETAIL_TEXT_SELECTORS = [];
 
 function findMailItems() {
   return listVisible ? [mailItem] : [];
@@ -724,6 +762,141 @@ return {
 
   assert.match(text, /778899/);
   assert.deepEqual(api.getCalls(), ['mail', 'delete', 'inbox']);
+});
+
+test('getOpenedMailDetailText prefers visible detail text over stale page body codes', () => {
+  const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('isVisibleNode'),
+    extractFunction('isMailItemNode'),
+    extractFunction('getMailItemText'),
+    extractFunction('getVisibleNodeText'),
+    extractFunction('getOpenedMailDetailText'),
+    extractFunction('extractStrictChatGPTVerificationCode'),
+    extractFunction('isLikelyCompactTimeValue'),
+    extractFunction('isLikelyHeaderTimestampCode'),
+    extractFunction('findSafeStandaloneSixDigitCode'),
+    extractFunction('extractVerificationCode'),
+  ].join('\n');
+
+  const api = new Function(`
+const mailItem = {
+  textContent: 'OpenAI old code 111111',
+  querySelector() { return null; },
+};
+const detailNode = {
+  hidden: false,
+  innerText: 'ChatGPT Log-in Code If that was you, enter this code: 222222',
+  textContent: 'ChatGPT Log-in Code If that was you, enter this code: 222222',
+  getBoundingClientRect() { return { width: 120, height: 40 }; },
+  closest() { return null; },
+};
+const document = {
+  body: {
+    innerText: 'OpenAI old code 111111 ChatGPT Log-in Code If that was you, enter this code: 222222',
+    textContent: 'OpenAI old code 111111 ChatGPT Log-in Code If that was you, enter this code: 222222',
+  },
+  querySelectorAll(selector) {
+    if (selector === '.mail-detail') return [detailNode];
+    return [];
+  },
+};
+const window = {
+  getComputedStyle() {
+    return { display: 'block', visibility: 'visible' };
+  },
+};
+const MAIL_ITEM_SELECTORS = ['.mail-item'];
+const MAIL_ITEM_SELECTOR_GROUP = '.mail-item';
+const MAIL_DETAIL_TEXT_SELECTORS = ['.mail-detail'];
+${bundle}
+return { getOpenedMailDetailText, extractVerificationCode, mailItem };
+`)();
+
+  const text = api.getOpenedMailDetailText(api.mailItem, 'OpenAI old code 111111');
+
+  assert.equal(api.extractVerificationCode(text), '222222');
+});
+
+test('handlePollEmail skips excluded preview code before opening stale 2925 mail', async () => {
+  const bundle = [
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('handlePollEmail'),
+  ].join('\n');
+
+  const api = new Function(`
+let state = 'ready';
+const seenCodes = new Set();
+const readAndDeleteCalls = [];
+const oldMail = {
+  id: 'old',
+  text: 'OpenAI verification code 111111',
+  timestamp: 200000,
+};
+const newMail = {
+  id: 'new',
+  text: 'OpenAI verification code 222222',
+  timestamp: 210000,
+};
+
+function findMailItems() {
+  return state === 'ready' ? [oldMail, newMail] : [];
+}
+
+function parseMailItemTimestamp(item) {
+  return item.timestamp;
+}
+
+function matchesMailFilters(text) {
+  return /openai|verification/i.test(String(text || ''));
+}
+
+function getMailItemText(item) {
+  return item.text;
+}
+
+function extractVerificationCode(text) {
+  const match = String(text || '').match(/(\\d{6})/);
+  return match ? match[1] : null;
+}
+
+async function sleep() {}
+async function sleepRandom() {}
+async function returnToInbox() {
+  return true;
+}
+async function refreshInbox() {}
+
+async function openMailAndDeleteAfterRead(item) {
+  readAndDeleteCalls.push(item.id);
+  return item.text;
+}
+
+async function ensureSeenCodesSession() {}
+function persistSeenCodes() {}
+function log() {}
+
+${bundle}
+
+return {
+  handlePollEmail,
+  getReadAndDeleteCalls() {
+    return readAndDeleteCalls.slice();
+  },
+};
+`)();
+
+  const result = await api.handlePollEmail(8, {
+    senderFilters: ['openai'],
+    subjectFilters: ['verification'],
+    maxAttempts: 1,
+    intervalMs: 1,
+    filterAfterTimestamp: 200000,
+    excludeCodes: ['111111'],
+  });
+
+  assert.equal(result.code, '222222');
+  assert.deepEqual(api.getReadAndDeleteCalls(), ['new']);
 });
 
 test('deleteAllMailboxEmails selects all messages and clicks delete', async () => {
