@@ -955,6 +955,65 @@ test('verification flow keeps fixed filter timestamp after step 4 resend', async
   assert.equal(pollPayloads[1].filterAfterTimestamp, 123456);
 });
 
+test('verification flow advances 2925 filter timestamp after rejected code resend', async () => {
+  const pollPayloads = [];
+  const resendRequestedAt = 200000;
+  let submitCount = 0;
+
+  const helpers = createVerificationFlowTestHelpers({
+    sendToMailContentScriptResilient: async (_mail, message) => {
+      if (message.type === 'POLL_EMAIL') {
+        pollPayloads.push(message.payload);
+        return {
+          code: pollPayloads.length === 1 ? '111111' : '222222',
+          emailTimestamp: pollPayloads.length,
+        };
+      }
+      return {};
+    },
+    sendToContentScript: async (_source, message) => {
+      if (message.type === 'FILL_CODE') {
+        submitCount += 1;
+        return submitCount === 1
+          ? { invalidCode: true, errorText: '旧验证码' }
+          : {};
+      }
+      if (message.type === 'RESEND_VERIFICATION_CODE') {
+        return {};
+      }
+      return {};
+    },
+    setState: async () => {},
+  });
+
+  const realDateNow = Date.now;
+  Date.now = () => resendRequestedAt;
+  try {
+    await helpers.resolveVerificationStep(
+      4,
+      {
+        email: 'user@example.com',
+        mailProvider: '2925',
+        mail2925Mode: 'provide',
+        lastSignupCode: null,
+        verificationResendCount: 1,
+      },
+      { provider: '2925', label: '2925 邮箱' },
+      {
+        filterAfterTimestamp: 100000,
+        maxResendRequests: 1,
+      }
+    );
+  } finally {
+    Date.now = realDateNow;
+  }
+
+  assert.equal(pollPayloads.length, 2);
+  assert.equal(pollPayloads[0].filterAfterTimestamp, 100000);
+  assert.equal(pollPayloads[1].filterAfterTimestamp, resendRequestedAt);
+  assert.deepEqual(pollPayloads[1].excludeCodes, ['111111']);
+});
+
 test('verification flow uses configured signup resend count for step 4', async () => {
   const resendSteps = [];
   let pollCalls = 0;

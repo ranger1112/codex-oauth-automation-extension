@@ -1262,6 +1262,13 @@
             // Keep resend flow best-effort; state sync callback failures should not break verification.
           }
         }
+        const numericRequestedAt = Number(requestedAt) || 0;
+        if (mail?.provider === '2925' && numericRequestedAt > 0) {
+          nextFilterAfterTimestamp = Math.max(
+            Number(nextFilterAfterTimestamp) || 0,
+            Math.floor(numericRequestedAt)
+          );
+        }
         return nextFilterAfterTimestamp;
       };
 
