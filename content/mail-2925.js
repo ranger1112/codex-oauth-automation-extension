@@ -13,6 +13,7 @@ if (!isTopFrame) {
 let seenCodes = new Set();
 let seenCodeSessionKey = '';
 let seenCodesReadyPromise = null;
+const MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS = 60000;
 
 async function loadSeenCodes() {
   try {
@@ -1274,7 +1275,7 @@ async function handlePollEmail(step, payload) {
     initialLoadUsedRefresh = true;
     await returnToInbox();
     await refreshInbox();
-    await sleep(2000);
+    await sleep(MAIL2925_EMPTY_INBOX_RETRY_DELAY_MS);
     if (typeof throwIfMail2925LimitReached === 'function') {
       throwIfMail2925LimitReached();
     }
