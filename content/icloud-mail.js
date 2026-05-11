@@ -98,6 +98,60 @@ if (shouldHandlePollEmailInCurrentFrame) {
     return null;
   }
 
+  function normalizeMinuteTimestamp(timestamp) {
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
+    const date = new Date(timestamp);
+    date.setSeconds(0, 0);
+    return date.getTime();
+  }
+
+  function parseIcloudTimestampText(rawText) {
+    const text = normalizeText(rawText);
+    if (!text) return null;
+
+    const parsedNative = Date.parse(text);
+    if (Number.isFinite(parsedNative)) {
+      return parsedNative;
+    }
+
+    let match = text.match(/(\d{4})[年\/-](\d{1,2})[月\/-](\d{1,2})日?\s*(?:上午|下午|AM|PM)?\s*(\d{1,2}):(\d{2})/i);
+    if (match) {
+      const [, year, month, day, hourText, minute] = match;
+      let hour = Number(hourText);
+      if (/下午|PM/i.test(text) && hour < 12) hour += 12;
+      if (/上午|AM/i.test(text) && hour === 12) hour = 0;
+      return new Date(Number(year), Number(month) - 1, Number(day), hour, Number(minute), 0, 0).getTime();
+    }
+
+    match = text.match(/(今天|昨天)?\s*(上午|下午|AM|PM)?\s*(\d{1,2}):(\d{2})/i);
+    if (match) {
+      const [, dayLabel, meridiem, hourText, minute] = match;
+      const date = new Date();
+      if (/昨天/.test(dayLabel || '')) {
+        date.setDate(date.getDate() - 1);
+      }
+      let hour = Number(hourText);
+      if (/下午|PM/i.test(meridiem || '') && hour < 12) hour += 12;
+      if (/上午|AM/i.test(meridiem || '') && hour === 12) hour = 0;
+      date.setHours(hour, Number(minute), 0, 0);
+      return date.getTime();
+    }
+
+    match = text.match(/(\d{1,2})[月\/-](\d{1,2})日?\s*(?:上午|下午|AM|PM)?\s*(\d{1,2}):(\d{2})/i);
+    if (match) {
+      const [, month, day, hourText, minute] = match;
+      const date = new Date();
+      let hour = Number(hourText);
+      if (/下午|PM/i.test(text) && hour < 12) hour += 12;
+      if (/上午|AM/i.test(text) && hour === 12) hour = 0;
+      date.setMonth(Number(month) - 1, Number(day));
+      date.setHours(hour, Number(minute), 0, 0);
+      return date.getTime();
+    }
+
+    return null;
+  }
+
   function readOpenedMailHeader() {
     const headerRoot = document.querySelector('.ic-efwqa7');
     if (!headerRoot) {
@@ -276,14 +330,18 @@ if (shouldHandlePollEmailInCurrentFrame) {
   }
 
   async function handlePollEmail(step, payload) {
-    const { senderFilters, subjectFilters, maxAttempts, intervalMs, excludeCodes = [] } = payload;
+    const { senderFilters, subjectFilters, maxAttempts, intervalMs, excludeCodes = [], filterAfterTimestamp = 0 } = payload;
     const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
+    const filterAfterMinute = normalizeMinuteTimestamp(Number(filterAfterTimestamp) || 0);
     const FALLBACK_AFTER = 3;
     const pollSessionKey = normalizePollSessionKey(payload);
     const normalizedSenderFilters = senderFilters.map((filter) => String(filter || '').toLowerCase()).filter(Boolean);
     const normalizedSubjectFilters = subjectFilters.map((filter) => String(filter || '').toLowerCase()).filter(Boolean);
 
     log(`步骤 ${step}：开始轮询 iCloud 邮箱（最多 ${maxAttempts} 次）`);
+    if (filterAfterMinute) {
+      log(`步骤 ${step}：仅尝试 ${new Date(filterAfterMinute).toLocaleString('zh-CN', { hour12: false })} 及之后时间的邮件。`);
+    }
     await waitForElement('.content-container', 10000);
     await sleep(1500);
     const currentItems = collectThreadItems();
@@ -318,6 +376,12 @@ if (shouldHandlePollEmailInCurrentFrame) {
         }
 
         const meta = getThreadItemMetadata(item);
+        const itemTimestamp = parseIcloudTimestampText(meta.timestamp);
+        const itemMinute = normalizeMinuteTimestamp(itemTimestamp || 0);
+        if (filterAfterMinute && (!itemMinute || itemMinute < filterAfterMinute)) {
+          continue;
+        }
+
         const lowerSender = meta.sender.toLowerCase();
         const lowerSubject = normalizeText([meta.subject, meta.preview].join(' ')).toLowerCase();
         const senderMatch = normalizedSenderFilters.some((filter) => lowerSender.includes(filter));
@@ -351,7 +415,8 @@ if (shouldHandlePollEmailInCurrentFrame) {
         }
 
         const source = useFallback && existingSignatures.has(signature) ? '回退匹配邮件' : '新邮件';
-        log(`步骤 ${step}：已找到验证码：${code}（来源：${source}）`, 'ok');
+        const timeLabel = itemTimestamp ? `，时间：${new Date(itemTimestamp).toLocaleString('zh-CN', { hour12: false })}` : '';
+        log(`步骤 ${step}：已找到验证码：${code}（来源：${source}${timeLabel}）`, 'ok');
         persistPollSessionBaseline(
           pollSessionKey,
           new Set(collectThreadItems().map(buildItemSignature)),

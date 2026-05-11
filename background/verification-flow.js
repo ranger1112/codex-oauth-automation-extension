@@ -1254,6 +1254,17 @@
         Number(options.lastResendAt) || 0
       );
 
+      const shouldAdvanceFilterAfterResend = () => {
+        if (!mail?.provider) {
+          return true;
+        }
+        // Hotmail/Graph keeps its own request timestamp window so the first request
+        // can still be replayed consistently after a rejected code. DOM/API temp
+        // mailbox providers should instead narrow to the latest resend time to avoid
+        // repeatedly reading an older delivered code.
+        return mail.provider !== HOTMAIL_PROVIDER;
+      };
+
       const updateFilterAfterTimestampForVerificationStep = async (requestedAt) => {
         if (externalOnResendRequestedAt) {
           try {
@@ -1263,7 +1274,7 @@
           }
         }
         const numericRequestedAt = Number(requestedAt) || 0;
-        if (mail?.provider === '2925' && numericRequestedAt > 0) {
+        if (shouldAdvanceFilterAfterResend() && numericRequestedAt > 0) {
           nextFilterAfterTimestamp = Math.max(
             Number(nextFilterAfterTimestamp) || 0,
             Math.floor(numericRequestedAt)

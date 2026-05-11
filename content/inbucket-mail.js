@@ -60,6 +60,52 @@ function normalizeText(value) {
   return (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+function normalizeDisplayText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeMinuteTimestamp(timestamp) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
+  const date = new Date(timestamp);
+  date.setSeconds(0, 0);
+  return date.getTime();
+}
+
+function parseMailboxTimestampText(rawText) {
+  const text = normalizeDisplayText(rawText);
+  if (!text) return null;
+
+  const parsedNative = Date.parse(text);
+  if (Number.isFinite(parsedNative)) {
+    return parsedNative;
+  }
+
+  let match = text.match(/(\d{4})[年\/-](\d{1,2})[月\/-](\d{1,2})日?\s*(?:上午|下午|AM|PM)?\s*(\d{1,2}):(\d{2})/i);
+  if (match) {
+    const [, year, month, day, hourText, minute] = match;
+    let hour = Number(hourText);
+    if (/下午|PM/i.test(text) && hour < 12) hour += 12;
+    if (/上午|AM/i.test(text) && hour === 12) hour = 0;
+    return new Date(Number(year), Number(month) - 1, Number(day), hour, Number(minute), 0, 0).getTime();
+  }
+
+  match = text.match(/(今天|昨天)?\s*(上午|下午|AM|PM)?\s*(\d{1,2}):(\d{2})/i);
+  if (match) {
+    const [, dayLabel, meridiem, hourText, minute] = match;
+    const date = new Date();
+    if (/昨天/.test(dayLabel || '')) {
+      date.setDate(date.getDate() - 1);
+    }
+    let hour = Number(hourText);
+    if (/下午|PM/i.test(meridiem || '') && hour < 12) hour += 12;
+    if (/上午|AM/i.test(meridiem || '') && hour === 12) hour = 0;
+    date.setHours(hour, Number(minute), 0, 0);
+    return date.getTime();
+  }
+
+  return null;
+}
+
 function extractVerificationCode(text) {
   const matchCn = text.match(/(?:代码为|验证码[^0-9]*?)[\s：:]*(\d{6})/);
   if (matchCn) return matchCn[1];
@@ -117,10 +163,12 @@ function parseMailboxEntry(entry, index = 0) {
   const sender = entry.querySelector('.from')?.textContent?.trim() || '';
   const dateText = entry.querySelector('.date')?.textContent?.trim() || '';
   const combinedText = [subject, sender, dateText].filter(Boolean).join(' ');
+  const receivedAt = parseMailboxTimestampText(dateText);
 
   return {
     entry,
     dateText,
+    receivedAt,
     sender,
     mailbox: '',
     subject,
@@ -175,10 +223,15 @@ async function handleMailboxPollEmail(step, payload) {
     maxAttempts = 20,
     intervalMs = 3000,
     excludeCodes = [],
+    filterAfterTimestamp = 0,
   } = payload || {};
   const excludedCodeSet = new Set(excludeCodes.filter(Boolean));
+  const filterAfterMinute = normalizeMinuteTimestamp(Number(filterAfterTimestamp) || 0);
 
   log(`步骤 ${step}：开始轮询 Inbucket 邮箱页面（最多 ${maxAttempts} 次）`);
+  if (filterAfterMinute) {
+    log(`步骤 ${step}：仅尝试 ${new Date(filterAfterMinute).toLocaleString('zh-CN', { hour12: false })} 及之后时间的邮件。`);
+  }
 
   try {
     await waitForElement('.message-list, .message-list-entry', 15000);
@@ -207,6 +260,8 @@ async function handleMailboxPollEmail(step, payload) {
       if (!mail.unread) continue;
       if (seenMailIds.has(mail.mailId)) continue;
       if (!useFallback && existingMailIds.has(mail.mailId)) continue;
+      const mailMinute = normalizeMinuteTimestamp(Number(mail.receivedAt) || 0);
+      if (filterAfterMinute && mailMinute && mailMinute < filterAfterMinute) continue;
 
       const match = rowMatchesFilters(mail, senderFilters, subjectFilters, '');
       if (!match.matched) continue;
@@ -229,8 +284,9 @@ async function handleMailboxPollEmail(step, payload) {
       await persistSeenMailIds();
 
       const source = existingMailIds.has(mail.mailId) ? '回退匹配邮件' : '新邮件';
+      const timeLabel = mail.receivedAt ? `，时间：${new Date(mail.receivedAt).toLocaleString('zh-CN', { hour12: false })}` : '';
       log(
-        `步骤 ${step}：已找到验证码：${code}（来源：${source}，发件人：${mail.sender || '未知'}，主题：${(mail.subject || '').slice(0, 60)}）`,
+        `步骤 ${step}：已找到验证码：${code}（来源：${source}${timeLabel}，发件人：${mail.sender || '未知'}，主题：${(mail.subject || '').slice(0, 60)}）`,
         'ok'
       );
 

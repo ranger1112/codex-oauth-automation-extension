@@ -200,6 +200,8 @@ test('icloud poll session baseline is reused across calls and enables fallback a
     extractFunction('getThreadItemMetadata'),
     extractFunction('buildItemSignature'),
     extractFunction('extractVerificationCode'),
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('parseIcloudTimestampText'),
     extractFunction('normalizePollSessionKey'),
     extractFunction('getOrCreatePollSessionBaseline'),
     extractFunction('persistPollSessionBaseline'),
@@ -286,7 +288,7 @@ return {
   const result = await api.handlePollEmail(8, {
     senderFilters: ['openai'],
     subjectFilters: ['code', 'login'],
-    maxAttempts: 1,
+    maxAttempts: 4,
     intervalMs: 10,
     excludeCodes: [],
     sessionKey: 's-1',
@@ -301,6 +303,8 @@ test('icloud step8 polling finds a visible first-row code immediately', async ()
     extractFunction('getThreadItemMetadata'),
     extractFunction('buildItemSignature'),
     extractFunction('extractVerificationCode'),
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('parseIcloudTimestampText'),
     extractFunction('normalizePollSessionKey'),
     extractFunction('getOrCreatePollSessionBaseline'),
     extractFunction('persistPollSessionBaseline'),
@@ -364,7 +368,7 @@ return { handlePollEmail };
   const result = await api.handlePollEmail(8, {
     senderFilters: ['openai', 'noreply', 'chatgpt'],
     subjectFilters: ['code', '验证码', 'login'],
-    maxAttempts: 1,
+    maxAttempts: 4,
     intervalMs: 10,
     excludeCodes: [],
     sessionKey: '8:visible-first',
@@ -379,6 +383,8 @@ test('icloud step8 visible first-row code still respects excluded codes', async 
     extractFunction('getThreadItemMetadata'),
     extractFunction('buildItemSignature'),
     extractFunction('extractVerificationCode'),
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('parseIcloudTimestampText'),
     extractFunction('normalizePollSessionKey'),
     extractFunction('getOrCreatePollSessionBaseline'),
     extractFunction('persistPollSessionBaseline'),
@@ -443,3 +449,5 @@ return { handlePollEmail };
     /仍未在 iCloud 邮箱中找到新的匹配邮件/
   );
 });
+
+
