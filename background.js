@@ -16,6 +16,7 @@ importScripts(
   'background/ip-proxy-provider-711proxy.js',
   'background/ip-proxy-core.js',
   'background/panel-bridge.js',
+  'background/registration-email-state.js',
   'background/generated-email-helpers.js',
   'background/signup-flow-helpers.js',
   'background/message-router.js',
@@ -203,6 +204,74 @@ const {
 const {
   isRecoverableStep9AuthFailure,
 } = self.MultiPageActivationUtils;
+const registrationEmailStateHelpers = self.MultiPageRegistrationEmailState?.createRegistrationEmailStateHelpers?.() || null;
+const DEFAULT_REGISTRATION_EMAIL_STATE = registrationEmailStateHelpers?.DEFAULT_REGISTRATION_EMAIL_STATE || {
+  current: '',
+  previous: '',
+  source: '',
+  updatedAt: 0,
+};
+
+function getRegistrationEmailState(state = {}) {
+  if (registrationEmailStateHelpers?.getRegistrationEmailState) {
+    return registrationEmailStateHelpers.getRegistrationEmailState(state);
+  }
+  const fallbackEmail = String(state?.email || '').trim();
+  return {
+    current: fallbackEmail,
+    previous: fallbackEmail,
+    source: '',
+    updatedAt: 0,
+  };
+}
+
+function buildRegistrationEmailStateUpdates(state = {}, options = {}) {
+  if (registrationEmailStateHelpers?.buildRegistrationEmailStateUpdates) {
+    return registrationEmailStateHelpers.buildRegistrationEmailStateUpdates(state, options);
+  }
+  const currentEmail = String(options?.currentEmail || '').trim();
+  const preservePrevious = Boolean(options?.preservePrevious);
+  const currentState = getRegistrationEmailState(state);
+  return {
+    email: currentEmail || null,
+    registrationEmailState: {
+      current: currentEmail,
+      previous: currentEmail || (preservePrevious ? currentState.previous : ''),
+      source: currentEmail
+        ? String(options?.source || '').trim()
+        : (preservePrevious ? currentState.source : ''),
+      updatedAt: currentEmail || (preservePrevious && currentState.previous) ? Date.now() : 0,
+    },
+  };
+}
+
+function getRegistrationEmailBaseline(state = {}, options = {}) {
+  if (registrationEmailStateHelpers?.getRegistrationEmailBaseline) {
+    return registrationEmailStateHelpers.getRegistrationEmailBaseline(state, options);
+  }
+  const preferredEmail = String(options?.preferredEmail || '').trim();
+  const fallbackEmail = String(options?.fallbackEmail || '').trim();
+  const currentState = getRegistrationEmailState(state);
+  return preferredEmail || currentState.current || currentState.previous || fallbackEmail || '';
+}
+
+function buildFlowRegistrationEmailStateUpdates(state = {}, options = {}) {
+  if (registrationEmailStateHelpers?.buildFlowRegistrationEmailStateUpdates) {
+    return registrationEmailStateHelpers.buildFlowRegistrationEmailStateUpdates(state, options);
+  }
+  return buildRegistrationEmailStateUpdates(state, options);
+}
+
+function getPreservedPhoneIdentity(state = {}) {
+  if (registrationEmailStateHelpers?.getPreservedPhoneIdentity) {
+    return registrationEmailStateHelpers.getPreservedPhoneIdentity(state);
+  }
+  return null;
+}
+
+function statePatchHasChanges(state = {}, patch = {}) {
+  return Object.keys(patch).some((key) => JSON.stringify(state?.[key] ?? null) !== JSON.stringify(patch[key] ?? null));
+}
 
 const LOG_PREFIX = '[MultiPage:bg]';
 const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
@@ -782,6 +851,7 @@ const DEFAULT_STATE = {
   resolvedSignupMethod: null, // 当前自动轮次冻结后的实际注册方式。
   accountIdentifierType: null,
   accountIdentifier: '',
+  registrationEmailState: { ...DEFAULT_REGISTRATION_EMAIL_STATE },
   email: null, // 运行时邮箱，由程序自动获取并写入，不能手动预填。
   password: null, // 运行时实际密码，由 customPassword 或程序自动生成后写入。
   accounts: [], // 已生成账号记录：{ email, password, createdAt }。
@@ -2182,6 +2252,7 @@ const cloudMailProvider = self.MultiPageBackgroundCloudMailProvider.createCloudM
   normalizeCloudMailDomain,
   normalizeCloudMailDomains,
   normalizeCloudMailMailApiMessages,
+  persistRegistrationEmailState,
   pickVerificationMessageWithTimeFallback,
   setEmailState,
   setPersistentSettings,
@@ -2861,6 +2932,7 @@ async function importSettingsBundle(configBundle) {
     ...importedSettings,
     currentHotmailAccountId: null,
     email: null,
+    registrationEmailState: { ...DEFAULT_REGISTRATION_EMAIL_STATE },
   };
 
   await setState(sessionUpdates);
@@ -2868,6 +2940,7 @@ async function importSettingsBundle(configBundle) {
     ...importedSettings,
     currentHotmailAccountId: null,
     ...(sessionUpdates.email !== undefined ? { email: sessionUpdates.email } : {}),
+    registrationEmailState: sessionUpdates.registrationEmailState,
   });
 
   return getState();
@@ -2917,12 +2990,14 @@ function isPhoneActivationForNumber(activation, phoneNumber) {
   return Boolean(activationDigits && targetDigits && activationDigits === targetDigits);
 }
 
-async function setEmailStateSilently(email) {
-  const normalizedEmail = String(email || '').trim() || null;
+async function setEmailStateSilently(email, options = {}) {
   const currentState = await getState();
-  const updates = {
-    email: normalizedEmail,
-  };
+  const updates = buildRegistrationEmailStateUpdates(currentState, {
+    currentEmail: email,
+    preservePrevious: Boolean(options?.preservePrevious),
+    source: options?.source || '',
+  });
+  const normalizedEmail = updates.email;
 
   if (normalizedEmail) {
     updates.accountIdentifierType = 'email';
@@ -2942,8 +3017,8 @@ async function setEmailStateSilently(email) {
   broadcastDataUpdate(updates);
 }
 
-async function setEmailState(email) {
-  await setEmailStateSilently(email);
+async function setEmailState(email, options = {}) {
+  await setEmailStateSilently(email, options);
   if (email) {
     const latestState = await getState();
     const recordStatus = shouldMarkAccountRunRecordRunning(latestState) ? 'running' : 'step2_stopped';
@@ -2951,6 +3026,44 @@ async function setEmailState(email) {
     await appendManualAccountRunRecordIfNeeded(recordStatus, latestState, recordReason);
     await resumeAutoRunIfWaitingForEmail();
   }
+}
+
+async function persistRegistrationEmailState(state = null, email, options = {}) {
+  const currentState = state && typeof state === 'object' && !Array.isArray(state)
+    ? state
+    : await getState();
+  const normalizedEmail = String(email || '').trim() || null;
+  const currentEmail = String(currentState?.email || '').trim() || null;
+  if (!Boolean(options?.preserveAccountIdentity)) {
+    if (normalizedEmail === currentEmail) {
+      return;
+    }
+    await setEmailState(normalizedEmail, options);
+    return;
+  }
+
+  const updates = normalizedEmail === currentEmail
+    ? (() => {
+        const preservedPhoneIdentity = getPreservedPhoneIdentity(currentState);
+        return preservedPhoneIdentity
+          ? {
+              phoneNumber: '',
+              ...preservedPhoneIdentity,
+            }
+          : {};
+      })()
+    : buildFlowRegistrationEmailStateUpdates(currentState, {
+        currentEmail: normalizedEmail,
+        preservePrevious: Boolean(options?.preservePrevious),
+        preserveAccountIdentity: true,
+        source: options?.source || '',
+      });
+
+  if (!Object.keys(updates).length || !statePatchHasChanges(currentState, updates)) {
+    return;
+  }
+  await setState(updates);
+  broadcastDataUpdate(updates);
 }
 
 async function setSignupPhoneStateSilently(phoneNumber) {
@@ -6589,6 +6702,16 @@ async function fetchIcloudHideMyEmail(options = {}) {
     throwIfStopped();
     const generateNew = Boolean(options?.generateNew);
     const preferredHost = String(options?.hostPreference || options?.preferredHost || '').trim();
+    const persistSelectedIcloudEmail = async (email) => {
+      if (typeof persistRegistrationEmailState === 'function') {
+        await persistRegistrationEmailState(options?.state || null, email, {
+          source: options?.source || '',
+          preserveAccountIdentity: Boolean(options?.preserveAccountIdentity),
+        });
+        return;
+      }
+      await setEmailState(email, options?.source ? { source: options.source } : {});
+    };
     await addLog('iCloud：正在加载别名列表并校验当前浏览器登录状态...', 'info');
 
     const { serviceUrl, setupUrl } = await resolveIcloudPremiumMailService(
@@ -6608,7 +6731,7 @@ async function fetchIcloudHideMyEmail(options = {}) {
     if (!generateNew) {
       const reusableAlias = pickReusableIcloudAlias(existingAliases);
       if (reusableAlias) {
-        await setEmailState(reusableAlias.email);
+        await persistSelectedIcloudEmail(reusableAlias.email);
         await addLog(`iCloud：复用未使用别名 ${reusableAlias.email}`, 'ok');
         broadcastIcloudAliasesChanged({ reason: 'selected', email: reusableAlias.email });
         return reusableAlias.email;
@@ -6734,7 +6857,7 @@ async function fetchIcloudHideMyEmail(options = {}) {
         }
       }
 
-      await setEmailState(alias);
+      await persistSelectedIcloudEmail(alias);
       await addLog(`iCloud：已创建并保留新别名 ${alias}`, 'ok');
       broadcastIcloudAliasesChanged({ reason: 'created', email: alias });
       return alias;
@@ -6745,7 +6868,7 @@ async function fetchIcloudHideMyEmail(options = {}) {
 
       const reusableAlias = pickReusableIcloudAlias(existingAliases);
       if (reusableAlias) {
-        await setEmailState(reusableAlias.email);
+        await persistSelectedIcloudEmail(reusableAlias.email);
         await addLog(
           `iCloud：当前网络/上下文波动，暂无法创建新别名，已临时回退复用 ${reusableAlias.email}。`,
           'warn'
@@ -7066,6 +7189,15 @@ function isSignupEntryHost(hostname = '') {
     return navigationUtils.isSignupEntryHost(hostname);
   }
   return ['chatgpt.com', 'chat.openai.com'].includes(hostname);
+}
+
+function isLikelyLoggedInChatgptHomeUrl(rawUrl) {
+  const parsed = parseUrlSafely(rawUrl);
+  if (!parsed) return false;
+  if (!isSignupEntryHost(String(parsed.hostname || '').toLowerCase())) {
+    return false;
+  }
+  return !/^\/(?:auth\/|create-account\/|email-verification|log-in|add-phone)(?:[/?#]|$)/i.test(parsed.pathname || '');
 }
 
 function isSignupPasswordPageUrl(rawUrl) {
@@ -7758,7 +7890,7 @@ function isPhoneSmsPlatformRateLimitFailure(error) {
 
 function isPlusCheckoutNonFreeTrialFailure(error) {
   const message = getErrorMessage(error);
-  return /PLUS_CHECKOUT_NON_FREE_TRIAL::|今日应付金额不是\s*0|没有免费试用资格/i.test(message);
+  return /PLUS_CHECKOUT_NON_FREE_TRIAL::|今日应付金额不是\s*0|没有免费试用资格|该账号已经开通过\s*ChatGPT\s*订阅套餐，不能重复订阅(?:。)?(?:（\s*checkout_order\s*）|\(\s*checkout_order\s*\))?/i.test(message);
 }
 
 function isGpcTaskEndedFailure(error) {
@@ -9542,6 +9674,7 @@ async function executeStep(step, options = {}) {
  */
 async function executeStepAndWait(step, delayAfter = 2000) {
   throwIfStopped();
+  let completionPayload = null;
 
   const delaySeconds = normalizeAutoStepDelaySeconds((await getState()).autoStepDelaySeconds, null);
   if (delaySeconds > 0) {
@@ -9570,7 +9703,7 @@ async function executeStepAndWait(step, delayAfter = 2000) {
     await addLog(`自动运行：步骤 ${step} 已执行返回，当前状态为 ${latestState.stepStatuses?.[step] || 'pending'}，准备继续后续步骤。`, 'info');
   } else if (doesStepUseCompletionSignal(step, executionState)) {
     await addLog(`自动运行：步骤 ${step} 已发起，正在等待完成信号（超时 ${AUTO_RUN_SIGNAL_COMPLETION_TIMEOUT_MS / 1000} 秒）。`, 'info');
-    await executeStepViaCompletionSignal(step, AUTO_RUN_SIGNAL_COMPLETION_TIMEOUT_MS);
+    completionPayload = await executeStepViaCompletionSignal(step, AUTO_RUN_SIGNAL_COMPLETION_TIMEOUT_MS);
     await addLog(`自动运行：步骤 ${step} 已收到完成信号，准备继续后续步骤。`, 'info');
   } else {
     await executeStep(step);
@@ -9586,6 +9719,13 @@ async function executeStepAndWait(step, delayAfter = 2000) {
         stableMs: 1000,
         initialDelayMs: 800,
       });
+      try {
+        await validateStep5PostCompletion(signupTabId, completionPayload || {});
+      } catch (step5ValidationError) {
+        await setStepStatus(5, 'failed');
+        await addLog(`失败：${getErrorMessage(step5ValidationError)}`, 'error', { step: 5 });
+        throw step5ValidationError;
+      }
     }
   }
 
@@ -9752,6 +9892,7 @@ const generatedEmailHelpers = self.MultiPageGeneratedEmailHelpers?.createGenerat
   getCloudflareTempEmailAddressFromResponse,
   getCloudflareTempEmailConfig,
   getCustomEmailPoolEmail: getCustomEmailPoolEmailForRun,
+  getRegistrationEmailBaseline,
   getState,
   ensureMail2925AccountForFlow,
   joinCloudflareTempEmailUrl,
@@ -9759,6 +9900,7 @@ const generatedEmailHelpers = self.MultiPageGeneratedEmailHelpers?.createGenerat
   normalizeCloudflareTempEmailAddress,
   normalizeEmailGenerator,
   isGeneratedAliasProvider,
+  persistRegistrationEmailState,
   reuseOrCreateTab,
   sendToContentScript,
   setEmailState,
@@ -11067,13 +11209,14 @@ const signupFlowHelpers = self.MultiPageSignupFlowHelpers?.createSignupFlowHelpe
   },
   isSignupProfilePageUrl: (rawUrl) => {
     const parsed = parseUrlSafely(rawUrl);
-    return Boolean(parsed && isSignupPageHost(parsed.hostname) && /\/(?:create-account\/profile|u\/signup\/profile|signup\/profile)(?:[/?#]|$)/i.test(parsed.pathname || ''));
+    return Boolean(parsed && isSignupPageHost(parsed.hostname) && /\/(?:create-account\/profile|u\/signup\/profile|signup\/profile|about-you)(?:[/?#]|$)/i.test(parsed.pathname || ''));
   },
   isRetryableContentScriptTransportError,
   isHotmailProvider,
   isLuckmailProvider,
   isSignupPasswordPageUrl,
   isTabAlive,
+  persistRegistrationEmailState,
   reuseOrCreateTab,
   sendToContentScriptResilient,
   setEmailState,
@@ -11311,6 +11454,7 @@ const step8Executor = self.MultiPageBackgroundStep8?.createStep8Executor({
   resolveSignupMethod,
   reuseOrCreateTab,
   sendToContentScriptResilient,
+  buildRegistrationEmailStateUpdates,
   setState,
   shouldUseCustomRegistrationEmail,
   sleepWithStop,
@@ -12143,6 +12287,134 @@ async function getLoginAuthStateFromContent(options = {}) {
   }
 
   return result || {};
+}
+
+async function getStep5SubmitStateFromContent(options = {}) {
+  const result = await sendToContentScriptResilient(
+    'signup-page',
+    {
+      type: 'GET_STEP5_SUBMIT_STATE',
+      source: 'background',
+      payload: {},
+    },
+    {
+      timeoutMs: options.timeoutMs ?? 15000,
+      retryDelayMs: options.retryDelayMs ?? 600,
+      responseTimeoutMs: options.responseTimeoutMs ?? (options.timeoutMs ?? 15000),
+      logMessage: options.logMessage || '步骤 5：资料页正在切换，等待页面恢复后确认提交结果...',
+      logStep: 5,
+      logStepKey: options.logStepKey || 'fill-profile',
+    }
+  );
+
+  if (result?.error) {
+    throw new Error(result.error);
+  }
+
+  return result || {};
+}
+
+async function recoverStep5SubmitRetryPageOnTab(options = {}) {
+  const result = await sendToContentScriptResilient(
+    'signup-page',
+    {
+      type: 'RECOVER_STEP5_SUBMIT_RETRY_PAGE',
+      source: 'background',
+      payload: {
+        timeoutMs: options.timeoutMs ?? 12000,
+        maxClickAttempts: options.maxClickAttempts ?? 2,
+      },
+    },
+    {
+      timeoutMs: options.timeoutMs ?? 15000,
+      retryDelayMs: options.retryDelayMs ?? 600,
+      responseTimeoutMs: options.responseTimeoutMs ?? (options.timeoutMs ?? 15000),
+      logMessage: options.logMessage || '步骤 5：资料提交后正在尝试恢复认证重试页...',
+      logStep: 5,
+      logStepKey: options.logStepKey || 'fill-profile',
+    }
+  );
+
+  if (result?.error) {
+    throw new Error(result.error);
+  }
+
+  return result || {};
+}
+
+async function validateStep5PostCompletion(tabId, completionPayload = {}) {
+  if (!Number.isInteger(tabId)) {
+    throw new Error('步骤 5：缺少有效的资料页标签页，无法确认提交后的最终状态。');
+  }
+
+  const maxAuthRetryRecoveries = Math.max(1, Number(completionPayload?.maxAuthRetryRecoveries) || 2);
+  let authRetryRecoveryCount = 0;
+
+  while (true) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    const currentUrl = String(tab?.url || completionPayload?.url || '').trim();
+    if (currentUrl && isLikelyLoggedInChatgptHomeUrl(currentUrl)) {
+      return {
+        successState: 'logged_in_home',
+        url: currentUrl,
+      };
+    }
+
+    const pageState = await getStep5SubmitStateFromContent({
+      timeoutMs: 15000,
+      responseTimeoutMs: 15000,
+      retryDelayMs: 500,
+      logMessage: '步骤 5：资料提交已触发页面跳转，正在确认最终页面状态...',
+    });
+
+    if (pageState.userAlreadyExistsBlocked) {
+      throw new Error('SIGNUP_USER_ALREADY_EXISTS::步骤 5：检测到 user_already_exists，当前轮将直接停止。');
+    }
+    if (pageState.maxCheckAttemptsBlocked) {
+      throw new Error('AUTH_MAX_CHECK_ATTEMPTS::max_check_attempts on step 5 auth retry page; restart the current auth step without clicking Retry.');
+    }
+
+    if (pageState.retryPage) {
+      if (authRetryRecoveryCount >= maxAuthRetryRecoveries) {
+        throw new Error(`步骤 5：资料提交后连续进入认证重试页 ${maxAuthRetryRecoveries} 次，页面仍未恢复。URL: ${pageState.url || currentUrl || 'unknown'}`);
+      }
+      authRetryRecoveryCount += 1;
+      await addLog(`步骤 5：提交完成信号后检测到认证重试页，正在自动恢复（${authRetryRecoveryCount}/${maxAuthRetryRecoveries}）...`, 'warn', {
+        step: 5,
+        stepKey: 'fill-profile',
+      });
+      await recoverStep5SubmitRetryPageOnTab({
+        timeoutMs: 15000,
+        retryDelayMs: 600,
+        logMessage: '步骤 5：资料提交后的认证重试页正在恢复，等待“重试”按钮重新就绪...',
+      });
+      await waitForTabStableComplete(tabId, {
+        timeoutMs: 30000,
+        retryDelayMs: 300,
+        stableMs: 1000,
+        initialDelayMs: 300,
+      }).catch(() => null);
+      continue;
+    }
+
+    if (pageState.successState === 'logged_in_home' || pageState.successState === 'oauth_consent' || pageState.successState === 'add_phone') {
+      return pageState;
+    }
+
+    if (pageState.errorText) {
+      throw new Error(`步骤 5：资料提交后页面返回错误：${pageState.errorText}。URL: ${pageState.url || currentUrl || 'unknown'}`);
+    }
+
+    if (pageState.profileVisible) {
+      throw new Error(`步骤 5：资料提交完成信号已收到，但页面仍停留在资料页，当前流程将直接报错。URL: ${pageState.url || currentUrl || 'unknown'}`);
+    }
+
+    if (pageState.unknownAuthPage) {
+      throw new Error(`步骤 5：资料提交后进入未识别的认证页，无法确认成功。URL: ${pageState.url || currentUrl || 'unknown'}`);
+    }
+
+    throw new Error(`步骤 5：资料提交后未能确认最终状态。URL: ${pageState.url || currentUrl || 'unknown'}`);
+  }
 }
 
 async function ensureStep8VerificationPageReady(options = {}) {
