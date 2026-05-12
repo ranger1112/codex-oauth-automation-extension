@@ -1327,9 +1327,10 @@ async function handlePollEmail(step, payload) {
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index];
         const itemTimestamp = parseMailItemTimestamp(item);
+        const hasItemTimestamp = Number.isFinite(Number(itemTimestamp)) && Number(itemTimestamp) > 0;
         const itemMinute = normalizeMinuteTimestamp(itemTimestamp || 0);
         const itemLabel = `第 ${index + 1}/${items.length} 封`;
-        const itemTimeLabel = itemTimestamp
+        const itemTimeLabel = hasItemTimestamp
           ? new Date(itemTimestamp).toLocaleString('zh-CN', { hour12: false })
           : '未知时间';
         const logSkipMail = (reason, text = '') => {
@@ -1338,22 +1339,9 @@ async function handlePollEmail(step, payload) {
           log(`步骤 ${step}：跳过 2925 邮件（${itemLabel}，时间：${itemTimeLabel}）：${reason}${suffix}`, 'info');
         };
 
-        if (filterAfterMinute && (!itemMinute || itemMinute < filterAfterMinute)) {
-          const thresholdLabel = new Date(filterAfterMinute).toLocaleString('zh-CN', { hour12: false });
-          logSkipMail(`邮件时间早于本轮筛选时间 ${thresholdLabel}`);
-          continue;
-        }
-
         const previewText = getMailItemText(item);
         if (!matchesMailFilters(previewText, senderFilters, subjectFilters)) {
           logSkipMail('预览不匹配发件人/主题筛选条件', previewText);
-          continue;
-        }
-        const previewTargetState = mail2925MatchTargetEmail
-          ? getTargetEmailMatchState(previewText, targetEmail)
-          : { matches: true, hasExplicitEmail: false };
-        if (mail2925MatchTargetEmail && previewTargetState.hasExplicitEmail && !previewTargetState.matches) {
-          logSkipMail(`预览中的目标邮箱不匹配 ${targetEmail || '(empty)'}`, previewText);
           continue;
         }
 
@@ -1366,6 +1354,25 @@ async function handlePollEmail(step, payload) {
           logSkipMail(`预览验证码 ${previewCode} 已处理过`, previewText);
           continue;
         }
+
+        if (filterAfterMinute && hasItemTimestamp && itemMinute < filterAfterMinute) {
+          const thresholdLabel = new Date(filterAfterMinute).toLocaleString('zh-CN', { hour12: false });
+          logSkipMail(`邮件时间早于本轮筛选时间 ${thresholdLabel}`, previewText);
+          continue;
+        }
+
+        if (filterAfterMinute && !hasItemTimestamp && previewCode) {
+          log(`步骤 ${step}：2925 邮件时间未识别，但预览已匹配验证码，继续打开确认。`, 'warn');
+        }
+
+        const previewTargetState = mail2925MatchTargetEmail
+          ? getTargetEmailMatchState(previewText, targetEmail)
+          : { matches: true, hasExplicitEmail: false };
+        if (mail2925MatchTargetEmail && previewTargetState.hasExplicitEmail && !previewTargetState.matches) {
+          logSkipMail(`预览中的目标邮箱不匹配 ${targetEmail || '(empty)'}`, previewText);
+          continue;
+        }
+
         const openedText = await openMailAndDeleteAfterRead(item, step);
         const openedTargetState = mail2925MatchTargetEmail
           ? getTargetEmailMatchState(openedText, targetEmail)

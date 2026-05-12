@@ -637,6 +637,90 @@ return {
   assert.deepEqual(api.getReadAndDeleteCalls(), ['mail-window']);
 });
 
+test('handlePollEmail opens matching 2925 preview code when row timestamp is missing', async () => {
+  const bundle = [
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('handlePollEmail'),
+  ].join('\n');
+
+  const api = new Function(`
+let state = 'ready';
+const seenCodes = new Set();
+const readAndDeleteCalls = [];
+const logs = [];
+const mail = {
+  id: 'mail-no-time',
+  text: 'OpenAI 你的 OpenAI 代码为 832272',
+};
+
+function findMailItems() {
+  return state === 'ready' ? [mail] : [];
+}
+
+function parseMailItemTimestamp() {
+  return null;
+}
+
+function matchesMailFilters(text) {
+  return /openai|代码/i.test(String(text || ''));
+}
+
+function getMailItemText(item) {
+  return item.text;
+}
+
+function extractVerificationCode(text) {
+  const match = String(text || '').match(/代码为\\s*(\\d{6})|(\\d{6})/);
+  return match ? (match[1] || match[2]) : null;
+}
+
+async function sleep() {}
+async function sleepRandom() {}
+async function returnToInbox() {
+  return true;
+}
+async function refreshInbox() {}
+
+async function openMailAndDeleteAfterRead(item) {
+  readAndDeleteCalls.push(item.id);
+  return item.text;
+}
+
+async function ensureSeenCodesSession() {}
+function persistSeenCodes() {}
+function log(message, level = 'info') {
+  logs.push({ message, level });
+}
+
+${bundle}
+
+return {
+  handlePollEmail,
+  getReadAndDeleteCalls() {
+    return readAndDeleteCalls.slice();
+  },
+  getLogs() {
+    return logs.slice();
+  },
+};
+`)();
+
+  const result = await api.handlePollEmail(8, {
+    senderFilters: ['openai'],
+    subjectFilters: ['代码'],
+    maxAttempts: 1,
+    intervalMs: 1,
+    filterAfterTimestamp: 120000,
+  });
+
+  assert.equal(result.code, '832272');
+  assert.deepEqual(api.getReadAndDeleteCalls(), ['mail-no-time']);
+  assert.equal(
+    api.getLogs().some(({ message }) => /邮件时间未识别/.test(message)),
+    true
+  );
+});
+
 test('ensureSeenCodesSession resets tried codes only when a new verification step session starts', async () => {
   const bundle = [
     extractFunction('buildSeenCodeSessionKey'),
