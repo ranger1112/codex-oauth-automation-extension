@@ -1315,6 +1315,7 @@ async function handlePollEmail(step, payload) {
       throwIfMail2925LimitReached();
     }
     log(`步骤 ${step}：正在轮询 2925 邮箱，第 ${attempt}/${maxAttempts} 次`);
+    const currentWindowBlockedCodes = new Set();
 
     if (attempt > 1 || !initialLoadUsedRefresh) {
       await returnToInbox();
@@ -1329,6 +1330,7 @@ async function handlePollEmail(step, payload) {
         const itemTimestamp = parseMailItemTimestamp(item);
         const hasItemTimestamp = Number.isFinite(Number(itemTimestamp)) && Number(itemTimestamp) > 0;
         const itemMinute = normalizeMinuteTimestamp(itemTimestamp || 0);
+        const isCurrentWindowMail = !filterAfterMinute || !hasItemTimestamp || itemMinute >= filterAfterMinute;
         const itemLabel = `第 ${index + 1}/${items.length} 封`;
         const itemTimeLabel = hasItemTimestamp
           ? new Date(itemTimestamp).toLocaleString('zh-CN', { hour12: false })
@@ -1347,10 +1349,16 @@ async function handlePollEmail(step, payload) {
 
         const previewCode = extractVerificationCode(previewText, strictChatGPTCodeOnly);
         if (previewCode && excludedCodeSet.has(previewCode)) {
+          if (isCurrentWindowMail) {
+            currentWindowBlockedCodes.add(previewCode);
+          }
           logSkipMail(`预览验证码 ${previewCode} 已在排除列表`, previewText);
           continue;
         }
         if (previewCode && seenCodes.has(previewCode)) {
+          if (isCurrentWindowMail) {
+            currentWindowBlockedCodes.add(previewCode);
+          }
           logSkipMail(`预览验证码 ${previewCode} 已处理过`, previewText);
           continue;
         }
@@ -1390,10 +1398,16 @@ async function handlePollEmail(step, payload) {
         }
 
         if (excludedCodeSet.has(candidateCode)) {
+          if (isCurrentWindowMail) {
+            currentWindowBlockedCodes.add(candidateCode);
+          }
           logSkipMail(`验证码 ${candidateCode} 已在排除列表`, openedText || previewText);
           continue;
         }
         if (seenCodes.has(candidateCode)) {
+          if (isCurrentWindowMail) {
+            currentWindowBlockedCodes.add(candidateCode);
+          }
           logSkipMail(`验证码 ${candidateCode} 已处理过`, openedText || previewText);
           continue;
         }
@@ -1404,6 +1418,11 @@ async function handlePollEmail(step, payload) {
         const timeLabel = itemTimestamp ? `，时间：${new Date(itemTimestamp).toLocaleString('zh-CN', { hour12: false })}` : '';
         log(`步骤 ${step}：已找到验证码：${candidateCode}（来源：${source}${timeLabel}）`, 'ok');
         return { ok: true, code: candidateCode, emailTimestamp: Date.now() };
+      }
+
+      if (currentWindowBlockedCodes.size > 0) {
+        const codes = [...currentWindowBlockedCodes].join('、');
+        throw new Error(`步骤 ${step}：当前时间窗内只收到已拒绝或已处理的 2925 验证码：${codes}，需要重新发送验证码。`);
       }
     }
 

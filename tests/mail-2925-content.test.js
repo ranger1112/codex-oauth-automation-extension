@@ -721,6 +721,92 @@ return {
   );
 });
 
+test('handlePollEmail fails fast when current 2925 mail only contains excluded body code', async () => {
+  const bundle = [
+    extractFunction('normalizeNodeText'),
+    extractFunction('summarizeMail2925Text'),
+    extractFunction('normalizeMinuteTimestamp'),
+    extractFunction('handlePollEmail'),
+  ].join('\n');
+
+  const api = new Function(`
+const seenCodes = new Set();
+const readAndDeleteCalls = [];
+let sleepCalls = 0;
+const mail = {
+  id: 'mail-same-code',
+  text: 'OpenAI 你的 ChatGPT 临时验证码',
+  timestamp: 180000,
+  body: '你的 ChatGPT 临时验证码 967568',
+};
+
+function findMailItems() {
+  return [mail];
+}
+
+function parseMailItemTimestamp(item) {
+  return item.timestamp;
+}
+
+function matchesMailFilters(text) {
+  return /openai|chatgpt|验证码/i.test(String(text || ''));
+}
+
+function getMailItemText(item) {
+  return item.text;
+}
+
+function extractVerificationCode(text) {
+  const match = String(text || '').match(/(\\d{6})/);
+  return match ? match[1] : null;
+}
+
+async function sleep() {
+  sleepCalls += 1;
+}
+async function sleepRandom() {}
+async function returnToInbox() {
+  return true;
+}
+async function refreshInbox() {}
+
+async function openMailAndDeleteAfterRead(item) {
+  readAndDeleteCalls.push(item.id);
+  return item.body;
+}
+
+async function ensureSeenCodesSession() {}
+function persistSeenCodes() {}
+function log() {}
+
+${bundle}
+
+return {
+  handlePollEmail,
+  getReadAndDeleteCalls() {
+    return readAndDeleteCalls.slice();
+  },
+  getSleepCalls() {
+    return sleepCalls;
+  },
+};
+`)();
+
+  await assert.rejects(
+    api.handlePollEmail(8, {
+      senderFilters: ['openai'],
+      subjectFilters: ['验证码'],
+      maxAttempts: 15,
+      intervalMs: 15000,
+      filterAfterTimestamp: 120000,
+      excludeCodes: ['967568'],
+    }),
+    /当前时间窗内只收到已拒绝或已处理的 2925 验证码：967568/
+  );
+  assert.deepEqual(api.getReadAndDeleteCalls(), ['mail-same-code']);
+  assert.equal(api.getSleepCalls(), 0);
+});
+
 test('ensureSeenCodesSession resets tried codes only when a new verification step session starts', async () => {
   const bundle = [
     extractFunction('buildSeenCodeSessionKey'),
