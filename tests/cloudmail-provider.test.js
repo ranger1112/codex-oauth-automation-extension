@@ -228,3 +228,68 @@ test('fetchCloudMailAddress preserves phone identity through the shared persiste
     },
   ]);
 });
+
+test('fetchCloudMailAddress builds random english name plus today date local part by default', async () => {
+  const api = globalThis.MultiPageBackgroundCloudMailProvider.createCloudMailProvider({
+    addLog: async () => {},
+    buildCloudMailHeaders: () => ({}),
+    CLOUD_MAIL_DEFAULT_PAGE_SIZE: 20,
+    CLOUD_MAIL_GENERATOR: 'cloudmail',
+    CLOUD_MAIL_PROVIDER: 'cloudmail',
+    fetchImpl: async (url) => {
+      if (String(url).includes('/api/public/addUser')) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ code: 200 }),
+        };
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ code: 200, data: { token: 'token' } }),
+      };
+    },
+    getCloudMailTokenFromResponse: () => 'token',
+    getState: async () => ({}),
+    joinCloudMailUrl: (baseUrl, path) => `${baseUrl}${path}`,
+    normalizeCloudMailAddress: (value) => String(value || '').trim().toLowerCase(),
+    normalizeCloudMailBaseUrl: (value) => String(value || '').trim(),
+    normalizeCloudMailDomain: (value) => String(value || '').trim(),
+    normalizeCloudMailDomains: (values) => values || [],
+    normalizeCloudMailMailApiMessages: () => [],
+    persistRegistrationEmailState: async () => {},
+    pickVerificationMessageWithTimeFallback: () => ({
+      match: null,
+      usedRelaxedFilters: false,
+      usedTimeFallback: false,
+    }),
+    setEmailState: async () => {},
+    setPersistentSettings: async () => {},
+    sleepWithStop: async () => {},
+    throwIfStopped: () => {},
+  });
+
+  const state = {
+    cloudMailBaseUrl: 'https://mail.example.com',
+    cloudMailAdminEmail: 'admin@example.com',
+    cloudMailAdminPassword: 'secret',
+    cloudMailToken: 'token',
+    cloudMailDomain: 'example.com',
+  };
+  const originalDate = globalThis.Date;
+  globalThis.Date = class extends originalDate {
+    constructor(...args) {
+      if (args.length) {
+        return new originalDate(...args);
+      }
+      return new originalDate('2026-05-17T00:00:00.000Z');
+    }
+  };
+
+  try {
+    const email = await api.fetchCloudMailAddress(state);
+
+    assert.match(email, /^[a-z]+20260517@example\.com$/);
+  } finally {
+    globalThis.Date = originalDate;
+  }
+});

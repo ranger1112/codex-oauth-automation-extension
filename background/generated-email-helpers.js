@@ -58,6 +58,45 @@
       return chars.join('');
     }
 
+    const ENGLISH_NAME_PREFIXES = [
+      'james', 'john', 'robert', 'michael', 'william', 'david', 'richard', 'joseph',
+      'thomas', 'charles', 'mary', 'patricia', 'jennifer', 'linda', 'elizabeth',
+      'barbara', 'susan', 'jessica', 'sarah', 'karen', 'daniel', 'matthew',
+      'anthony', 'mark', 'donald', 'steven', 'paul', 'andrew', 'joshua', 'kevin',
+      'brian', 'george', 'edward', 'ronald', 'timothy', 'jason', 'jeffrey', 'ryan',
+      'jacob', 'gary', 'nicholas', 'eric', 'jonathan', 'stephen', 'larry', 'justin',
+      'scott', 'brandon', 'benjamin', 'samuel', 'gregory', 'alexander', 'patrick',
+      'frank', 'raymond', 'jack', 'dennis', 'jerry', 'tyler', 'aaron', 'henry',
+      'douglas', 'peter', 'adam', 'zachary', 'nathan', 'walter', 'harold', 'kyle',
+      'carl', 'arthur', 'gerald', 'roger', 'alice', 'emma', 'olivia', 'sophia',
+      'isabella', 'mia', 'amelia', 'harper', 'evelyn', 'abigail', 'emily', 'ella',
+      'scarlett', 'grace', 'chloe', 'victoria', 'riley', 'aria', 'lily', 'nora',
+    ];
+
+    function pickRandomEnglishNamePrefix() {
+      return ENGLISH_NAME_PREFIXES[Math.floor(Math.random() * ENGLISH_NAME_PREFIXES.length)] || 'james';
+    }
+
+    function formatLocalDateDigits(date = new Date()) {
+      const current = new Date(date);
+      if (Number.isNaN(current.getTime())) {
+        return '';
+      }
+      const year = String(current.getFullYear());
+      const month = String(current.getMonth() + 1).padStart(2, '0');
+      const day = String(current.getDate()).padStart(2, '0');
+      return `${year}${month}${day}`;
+    }
+
+    function buildRandomNameDateLocalPart(date = new Date()) {
+      const normalizedPrefix = pickRandomEnglishNamePrefix();
+      const dateDigits = formatLocalDateDigits(date);
+      if (!dateDigits) {
+        return '';
+      }
+      return `${normalizedPrefix}${dateDigits}`;
+    }
+
     async function fetchCloudflareEmail(state, options = {}) {
       throwIfStopped();
       const latestState = state || await getState();
@@ -158,7 +197,9 @@
         requireAdminAuth: true,
         requireDomain: true,
       });
-      const requestedName = String(options.localPart || options.name || '').trim().toLowerCase() || generateCloudflareAliasLocalPart();
+      const requestedName = String(options.localPart || options.name || '').trim().toLowerCase()
+        || buildRandomNameDateLocalPart(options.date)
+        || generateCloudflareAliasLocalPart();
       const payload = {
         enablePrefix: true,
         enableRandomSubdomain: Boolean(config.useRandomSubdomain),
@@ -365,6 +406,7 @@
       fetchCloudflareTempEmailAddress,
       fetchDuckEmail,
       fetchGeneratedEmail,
+      buildRandomNameDateLocalPart,
       generateCloudflareAliasLocalPart,
       requestCloudflareTempEmailJson,
     };
